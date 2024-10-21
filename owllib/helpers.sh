@@ -14,8 +14,8 @@ fi
 # {{{ Functions
 # {{{ _color(string color)
 _color() {
-	local _color="$1"; shift
-	local _prefix='\e[0;3'
+	declare _color="$1"; shift
+	declare _prefix='\e[0;3'
 
 	if [[ -z "${OWLLIB_COLOR}" ]]; then
 		return
@@ -70,27 +70,41 @@ _color() {
 }
 # }}}
 
-# {{{ _print(string prefix, string text)
+# {{{ _print(string prefix, string text, int newline)
 _print() {
-	local _prefix="$1"; shift
-	local _text="$1"; shift
+	declare _prefix="$1"; shift
+	declare _text="$1"; shift
+	declare -i _newline="${1:-1}"; shift
 
-	while read line; do
-		# Check for stdout or pass data to pipe
-		if [ -t 1 ]; then
-			echo -e "${_prefix} ${line}" >&2
-		else
-			echo "${line}" >&2
+	declare -a _args=()
+
+	if [[ ${DEBUG} -gt 0 ]]; then
+		_prefix="[${FUNCNAME[1]}] ${_prefix}"
+	fi
+
+	if [[ -t 1 ]]; then
+		_args+=( "-e" )
+	fi
+
+	if [[ ${_newline} -eq 0 ]]; then
+		_args+=( "-n" )
+	fi
+
+	while IFS= read -r line; do
+		if [[ -n "${_prefix}" ]]; then
+			line="${_prefix} ${line}"
 		fi
+
+		echo ${_args[@]} "${line}" >&2
 		shift
-	done <<< ${_text}
+	done <<< "${_text}"
 }
 # }}}
 
 # {{{ _info(string text)
 _info() {
-	local _text="$1"; shift
-	local _prefix="$(_color GREEN)[INF]$(_color NOCOLOR)"
+	declare _text="$1"; shift
+	declare _prefix="$(_color GREEN)[INF]$(_color NOCOLOR)"
 
 	_print "${_prefix}" "${_text}"
 }
@@ -98,10 +112,10 @@ _info() {
 
 # {{{ _debug(string text)
 _debug() {
-	local _text="$1"; shift
-	local _prefix="$(_color BLUE)[DBG]$(_color NOCOLOR) [${FUNCNAME[1]}]"
+	declare _text="$1"; shift
+	declare _prefix="$(_color BLUE)[DBG]$(_color NOCOLOR)"
 
-	if [[ ${DEBUG} -eq 1 ]]; then
+	if [[ ${DEBUG} -gt 0 ]]; then
 		if [[ -z "${_text}" ]]; then
 			_print "${_prefix}" "Text is not specified"
 		else
@@ -113,7 +127,7 @@ _debug() {
 
 # {{{ _lib_debug(string text)
 _lib_debug() {
-	local _text="$1"; shift
+	declare _text="$1"; shift
 
 	if [[ "${OWLLIB_DEBUG}" -eq 1 ]]; then
 		DEBUG=1 _debug "${_text}"
@@ -123,12 +137,8 @@ _lib_debug() {
 
 # {{{ _error(string text)
 _error() {
-	local _text="$1"; shift
-	local _prefix="$(_color RED)[ERR]$(_color NOCOLOR)"
-
-	if [[ ${DEBUG} -eq 1 ]]; then
-		_prefix="$(_color RED)[ERR]$(_color NOCOLOR) [${FUNCNAME[1]}]"
-	fi
+	declare _text="$1"; shift
+	declare _prefix="$(_color RED)[ERR]$(_color NOCOLOR)"
 
 	_print "${_prefix}" "${_text}"
 	exit 1
@@ -137,99 +147,183 @@ _error() {
 
 # {{{ _warn(string text)
 _warn() {
-	local _text="$1"; shift
-	local _prefix="$(_color YELLOW)[WAR]$(_color NOCOLOR)"
-
-	if [[ ${DEBUG} -eq 1 ]]; then
-		_prefix="$(_color YELLOW)[WAR]$(_color NOCOLOR) [${FUNCNAME[1]}]"
-	fi
+	declare _text="$1"; shift
+	declare _prefix="$(_color YELLOW)[WAR]$(_color NOCOLOR)"
 
 	_print "${_prefix}" "${_text}"
 }
 # }}}
 
-# TODO: rewrite to pointers
-# {{{ _choose(string type, array elements)
-_choose() {
-	local _type="$1"; shift
-	local _elements=( $@ ); shift
+# {{{ _print_pos(refarray data, int pos_show, int count_show)
+_print_pos() {
+  declare -n _data_ref=$1; shift
+  declare -i _pos_show=${1:-1}; shift
+  declare -i _count_show=${1:-0}; shift
+  declare -i _pos=0
 
-	if [[ ${#_elements[@]} -eq 0 ]]; then
+  for e in "${_data_ref[@]}"; do
+	declare _prefix=""
+	if [[ ${_pos_show} -eq 1 ]]; then
+		if [[ ${_count_show} -eq 1 ]]; then
+			_prefix="[${_pos}/${#_data_ref[@]}]"
+		else
+			_prefix="${_pos}."
+		fi
+
+		_print "${_prefix}" "${_data_ref[${_pos}]}"
+	else
+		_warn "${_data_ref[${_pos}]}"
+	fi
+
+	_pos=$((_pos + 1))
+  done
+}
+# }}}
+
+# {{{ _print_hash(refhash data)
+_print_hash() {
+	declare -n _data_ref="$1"; shift
+
+	if [[ ${#_data_ref[@]} -eq 0 ]]; then
+		_warn "Hash ${!_data_ref} is empty"
+		return
+	fi
+
+	for i in "${!_data_ref[@]}"; do
+		_print "${i}:" "${_data_ref[${i}]}"
+	done
+}
+
+# {{{ _choose(refstring ret, arrayref elements, string type, int insensitive)
+_choose() {
+	declare -n _ret_ref="$1"; shift
+	declare -n _elements_ref="$1"; shift
+	declare _type="$1"; shift
+	declare -i _insense=${1:-0}
+
+	if [[ ${#_elements_ref[@]} -eq 0 ]]; then
 		_error "${type} is empty, nothing to choose"
 		return 1
 	fi
 
-	if [[ ${#_elements[@]} -eq 1 ]]; then
-		echo "${_elements[0]}"
+	if [[ ${#_elements_ref[@]} -eq 1 ]]; then
+		_print "0." "${_elements_ref[0]}"
 		return 0
 	fi
 
-	local _num=""
-	local _res=""
-	local _pos=0
+	declare _pattern=""
+	declare -i _pos=0
 	while :; do
 		_info "What ${_type} are you looking for: "
-		local _pos=0
-		for i in ${_elements[@]}; do
-			echo "${_pos}. ${i}" >&2
-			_pos=$((_pos + 1))
-		done
+		_print_pos _elements_ref
 
-		_num=""
-		echo -n "Enter number or name part of ${_type} (type -1 for exit): " >&2
-		read _num
+		_pattern=""
+		_print "" "Enter number or name part of ${_type} (type -1 for exit): " 0
+		read _pattern
 
-		local _part=( $(printf -- '%s\n' "${_elements[@]}" | grep "${_num}") )
-
-		if [[ -z "${_num}" || ${_num} -lt 0 ]]; then
+		if [[ -z "${_pattern}" ]]; then
 			_warn "You choose nothing, just exit"
 			return 1
 		else
-			if [[ "${_num}" =~ ^[0-9]+$ ]]; then
-				if [[ -z "${_elements[${_num}]}" ]]; then
-					_warn "${_type} by number ${_num} is not found, try another one"
+			if [[ "${_pattern}" =~ ^[0-9]+$ ]]; then
+				if [[ -z "${_elements_ref[${_pattern}]}" ]]; then
+					_warn "${_type} by number ${_pattern} is not found, try another one"
 				else
-					_ret="${_elements[${_num}]}"
+					_ret_ref="${_pattern}"
 					break
 				fi
 			else
-				if [[ -z "${_part[@]}" ]]; then
-					_warn "${_type} by name ${_part[@]} is not found, try another one"
-				elif [[ "${#_part[@]}" -gt 1 ]]; then
-					_warn "${_type} found ${#_part[@]} times, try to explain"
+				declare -a _found_elements=()
+				_lookup_pos _found_elements _elements_ref "${_pattern}" ${_insense}
+				if [[ ${#_found_elements[@]} -eq 0 ]]; then
+					_warn "Nothing found, try again"
+				elif [[ ${#_found_elements[@]} -gt 1 ]]; then
+					declare -a _tmp_elements=()
+					for i in ${_found_elements[@]}; do
+						_tmp_elements+=( "${_elements_ref[${i}]}" )
+					done
+					_warn "Found several times!"
+					_print_pos _tmp_elements 0
 				else
-					_ret="${_part}"
+					_ret_ref="${_found_elements[0]}"
 					break
 				fi
 			fi
 		fi
 	done
 
-	_info "You choose ${_ret} ${_type}"
-
-	echo "${_ret}"
+	_info "You choose ${_ret_ref} element in ${_type}"
+	return 0
 }
 # }}}
 
-# TODO: rewrite to pointers
-# {{{ _http_array_to_data(string key, array data)
-_http_array_to_data() {
-	local _key="$1"; shift
-	local _arr=( $@ )
+# {{{ _lookup(refarray ret, refarray array, string text, int insensitive)
+_lookup() {
+	declare -n _ret_ref="$1"; shift
+	declare -n _array_ref="$1"; shift
+	declare _string="$1"; shift
+	declare -i _insense=${1:-0}; shift
 
-	local _ret=""
+	if [[ ${_insense} -eq 1 ]]; then
+		_string="${_string,,}"
+	fi
 
-	for (( i=0; i < ${#_arr[@]}; i=$((i+1)) )); do
-		if [[ -z "${_ret}" ]]; then
-			_ret="${_key}%5B${i}%5D=${_arr[${i}]}"
-		else
-			_ret="${_ret}&${_key}%5B${i}%5D=${_arr[${i}]}"
+	for _elem in "${_array_ref[@]}"; do
+		if [[ ${_insense} -eq 1 && "${_elem,,}" =~ ${_string} ]]; then
+			echo "${_elem}"
+			_ret_ref+=( "${_elem}" )
+		elif [[ "${_elem}" =~ ${_string} ]]; then
+			_ret_ref+=( "${_elem}" )
 		fi
 	done
 
-	echo "${_ret}"
+	if [[ ${#_ret_ref[@]} -eq 0 ]]; then
+		return 1
+	fi
 }
 # }}}
+
+# {{{ _lookup_pos(refarray ret, refarray array, string text, int insensitive)
+_lookup_pos() {
+	declare -n _ret="$1"; shift
+	declare -n _array_ref="$1"; shift
+	declare _string="$1"; shift
+	declare -i _insense=${1:-0}; shift
+    declare _pos=0
+
+	if [[ ${_insense} -eq 1 ]]; then
+		_string="${_string,,}"
+	fi
+
+    while [[ ${_pos} -lt ${#_array_ref[@]} ]]; do
+      if [[ ${_insense} -eq 1 && "${_array_ref[${_pos}],,}" =~ ${_string} ]]; then
+		  _ret+=( "${_pos}" )
+	  elif [[ "${_array_ref[${_pos}]}" =~ ${_string} ]]; then
+		  _ret+=( "${_pos}" )
+	  fi
+      _pos=$((_pos + 1))
+    done
+
+	if [[ ${#_ret[@]} -eq 0 ]]; then
+		return 1
+	fi
+}
+# }}}
+
+# {{{ _merge_hash(refhash ret, refhash second, int replace)
+_merge_hash() {
+	declare -n _ret="$1"; shift
+	declare -n _second="$1"; shift
+	declare -i _replace=${1:-0}; shift
+
+	for i in "${!_second[@]}"; do
+		if [[ ${_replace} -eq 1 ]]; then
+			_ret[${i}]="${_second[${i}]}"
+		elif [[ -z "${_ret[${i}]}" ]]; then
+			_ret[${i}]="${_second[${i}]}"
+		fi
+	done
+}
 # }}}
 
 # {{{ Initialization
@@ -239,4 +333,20 @@ if [[ $(tput colors) -eq 256 ]]; then
 	_lib_debug "THERE IS 256 COLORS"
 	_256COLOR=1
 fi
+# }}}
+
+# {{{ _http_array_to_data(refstring ret, refarray data, string key)
+_http_array_to_data() {
+	declare -n _ret_ref="$1"; shift
+	declare -n _data_ref="$1"; shift
+	declare _key="${1}"; shift
+
+	for (( i=0; i < ${#_data_ref[@]}; i=$((i+1)) )); do
+		if [[ -z "${_ret_ref}" ]]; then
+			_ret_ref="${_key}%5B${i}%5D=${_data_ref[${i}]}"
+		else
+			_ret_ref="${_ret_ref}&${_key}%5B${i}%5D=${_data_ref[${i}]}"
+		fi
+	done
+}
 # }}}
